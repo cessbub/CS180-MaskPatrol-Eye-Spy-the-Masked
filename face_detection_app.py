@@ -109,53 +109,60 @@ def gen_frames():
 
             # convert the centroids to a NumPy array
             centroids = np.array(centroids)
+            print(centroids)
 
             # compute pairwise distances between all centroids
-            D = dist.cdist(centroids, centroids, metric="euclidean")
+            if centroids.ndim == 2:
+                D = dist.cdist(centroids, centroids, metric="euclidean")
 
-            # loop over the upper triangular of the distance matrix
-            for i in range(0, D.shape[0]):
-                for j in range(i + 1, D.shape[1]):
-                    # check to see if the distance between any two centroid pairs is less than the configured number of pixels
-                    if D[i, j] < MIN_DISTANCE:
-                        labels_dist[i] = 1
-                        labels_dist[j] = 1
+                # loop over the upper triangular of the distance matrix
+                for i in range(0, D.shape[0]):
+                    for j in range(i + 1, D.shape[1]):
+                        # check to see if the distance between any two centroid pairs is less than the configured number of pixels
+                        if D[i, j] < MIN_DISTANCE:
+                            labels_dist[i] = 1
+                            labels_dist[j] = 1
 
-            print(f"Distance Labels: {labels_dist}")  # Print out the labels to debug
+                print(f"Distance Labels: {labels_dist}")  # Print out the labels to debug
 
-            # loop over the detected face locations and their corresponding indexes
-            for ((startX, startY, endX, endY), i) in zip(locs, range(len(locs))):
-                # draw a bounding box around the detected face
-                cv2.rectangle(frame, (startX, startY), (endX, endY), dist_label[labels_dist[i]], 2)
+                # loop over the detected face locations and their corresponding indexes
+                for ((startX, startY, endX, endY), i) in zip(locs, range(len(locs))):
+                    # draw a bounding box around the detected face
+                    cv2.rectangle(frame, (startX, startY), (endX, endY), dist_label[labels_dist[i]], 2)
 
-                label_text = mask_label[labels_mask[i]]
-                print(f"Initial label_text: {label_text}")  # Print out the initial label to debug
+                    label_text = mask_label[labels_mask[i]]
+                    print(f"Initial label_text: {label_text}")  # Print out the initial label to debug
 
-                if labels_dist[i] == 1:
-                    label_text += " (Social Distancing Violation)"
-                    print(f"Updated label_text: {label_text}")  # Print out the updated label to debug
+                    if labels_dist[i] == 1:
+                        label_text += " (Social Distancing Violation)"
+                        print(f"Updated label_text: {label_text}")  # Print out the updated label to debug
 
-                # Display the label of the face
-                cv2.putText(frame, label_text, (startX, startY - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.85,
-                            dist_label[labels_dist[i]], 2)
+                    # Display the label of the face
+                    cv2.putText(frame, label_text, (startX, startY - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.85,
+                                dist_label[labels_dist[i]], 2)
+                    
+                    if labels_mask[i] in [1, 2, 3, 4]:
+                        log_message = "Someone is not wearing a mask properly."
+                        log_queue.put(log_message)
+
+                # show the output frame
+                ret, buffer = cv2.imencode('.jpg', frame)
+                frame = buffer.tobytes()
+                yield (b'--frame\r\n'
+                    b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
                 
-                if labels_mask[i] in [1, 2, 3, 4]:
-                    log_message = "Someone is not wearing a mask properly."
+                dist_violation = 1 in labels_dist
+                if dist_violation:  # if there's a violation, add a log message
+                    log_message = "There are people not social distancing."
                     log_queue.put(log_message)
-
-            # show the output frame
-            ret, buffer = cv2.imencode('.jpg', frame)
-            frame = buffer.tobytes()
-            yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
-            
-            dist_violation = 1 in labels_dist
-            if dist_violation:  # if there's a violation, add a log message
-                log_message = "There are people not social distancing."
-                log_queue.put(log_message)
-            #else:
-            #    log_message = "No violation detected"
-            #    log_queue.put(log_message)
+                #else:
+                #    log_message = "No violation detected"
+                #    log_queue.put(log_message)
+            else:
+                ret, buffer = cv2.imencode('.jpg', frame)
+                frame = buffer.tobytes()
+                yield (b'--frame\r\n'
+                       b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
 
 
 @app.route('/video_feed')
