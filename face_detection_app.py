@@ -1,7 +1,8 @@
 from scipy.spatial import distance as dist
-from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
-from tensorflow.keras.preprocessing.image import img_to_array
-from tensorflow.keras.models import load_model
+import tensorflow as tf
+# from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
+# from tensorflow.keras.preprocessing.image import img_to_array
+# from tensorflow.keras.models import load_model
 import numpy as np
 from flask import Flask, render_template, Response
 import cv2
@@ -29,9 +30,10 @@ faceNet = cv2.dnn.readNetFromCaffe(prototxt_path, model_path)
 # load the mask detection model
 mask_label = {0: 'MASK', 1: 'UNCOVERED CHIN', 2: 'UNCOVERED NOSE', 3: 'UNCOVERED NOSE AND MOUTH', 4: "NO MASK"}
 dist_label = {0: (0, 255, 0), 1: (255, 0, 0), 2:(255, 0, 0), 3: (255, 0, 0), 4: (255, 0, 0)}
-model = load_model("mask_detection.h5")
+# model = load_model("mask_detection.h5")
+interpreter = tf.lite.Interpreter(model_path="mask_detection_lite.tflite")
+interpreter.allocate_tensors()
 
-# define a function to generate video frames
 # define a function to generate video frames
 def gen_frames():
     while True:
@@ -73,10 +75,20 @@ def gen_frames():
                     face = frame[startY:endY, startX:endX]
 
                     # preprocess the face ROI
+                    # face = cv2.cvtColor(face, cv2.COLOR_BGR2RGB)
+                    # # face = cv2.resize(face, (224, 224))
+                    # face = np.expand_dims(face, axis=0)
+                    # # face = (face.astype(np.float32) - 127.5) / 127.5
+                    # face = cv2.resize(face, (input_shape[1], input_shape[2]))
                     face = cv2.cvtColor(face, cv2.COLOR_BGR2RGB)
                     face = cv2.resize(face, (224, 224))
-                    face = img_to_array(face)
-                    face = preprocess_input(face)
+                    face = np.expand_dims(face, axis=0)
+                    face = (face.astype(np.float32) - 127.5) / 127.5  # Normalize the image
+                    print("Resized face shape:", face.shape)
+
+                    # face = img_to_array(face)
+                    # face = preprocess_input(face)
+
 
                     faces.append(face)
                     locs.append((startX, startY, endX, endY))
@@ -84,63 +96,73 @@ def gen_frames():
                     labels_dist.append(0)
 
             # only make a predictions if at least one face was detected
-            if len(faces) > 0:
-                faces = np.array(faces, dtype="float32")
-                preds = model.predict(faces, batch_size=32)
+            for face in faces:
+                # faces = np.array(faces, dtype="float32")
+                # interpreter.set_tensor(interpreter.get_input_details()[0]['index'], faces)
+                # interpreter.invoke()
 
-                for pred in preds:
-                    i = np.argmax(pred)
-                    labels_mask.append(i)
+                interpreter.set_tensor(interpreter.get_input_details()[0]['index'], face)
+                interpreter.invoke()
+                pred = interpreter.get_tensor(interpreter.get_output_details()[0]['index'])
+                output_class = np.argmax(pred)
+                labels_mask.append(output_class)
 
             # convert the centroids to a NumPy array
             centroids = np.array(centroids)
+            print(centroids)
 
             # compute pairwise distances between all centroids
-            D = dist.cdist(centroids, centroids, metric="euclidean")
+            if centroids.ndim == 2:
+                D = dist.cdist(centroids, centroids, metric="euclidean")
 
-            # loop over the upper triangular of the distance matrix
-            for i in range(0, D.shape[0]):
-                for j in range(i + 1, D.shape[1]):
-                    # check to see if the distance between any two centroid pairs is less than the configured number of pixels
-                    if D[i, j] < MIN_DISTANCE:
-                        labels_dist[i] = 1
-                        labels_dist[j] = 1
+                # loop over the upper triangular of the distance matrix
+                for i in range(0, D.shape[0]):
+                    for j in range(i + 1, D.shape[1]):
+                        # check to see if the distance between any two centroid pairs is less than the configured number of pixels
+                        if D[i, j] < MIN_DISTANCE:
+                            labels_dist[i] = 1
+                            labels_dist[j] = 1
 
-            print(f"Distance Labels: {labels_dist}")  # Print out the labels to debug
+                print(f"Distance Labels: {labels_dist}")  # Print out the labels to debug
 
-            # loop over the detected face locations and their corresponding indexes
-            for ((startX, startY, endX, endY), i) in zip(locs, range(len(locs))):
-                # draw a bounding box around the detected face
-                cv2.rectangle(frame, (startX, startY), (endX, endY), dist_label[labels_dist[i]], 2)
+                # loop over the detected face locations and their corresponding indexes
+                for ((startX, startY, endX, endY), i) in zip(locs, range(len(locs))):
+                    # draw a bounding box around the detected face
+                    cv2.rectangle(frame, (startX, startY), (endX, endY), dist_label[labels_dist[i]], 2)
 
-                label_text = mask_label[labels_mask[i]]
-                print(f"Initial label_text: {label_text}")  # Print out the initial label to debug
+                    label_text = mask_label[labels_mask[i]]
+                    print(f"Initial label_text: {label_text}")  # Print out the initial label to debug
 
-                if labels_dist[i] == 1:
-                    label_text += " (Social Distancing Violation)"
-                    print(f"Updated label_text: {label_text}")  # Print out the updated label to debug
+                    if labels_dist[i] == 1:
+                        label_text += " (Social Distancing Violation)"
+                        print(f"Updated label_text: {label_text}")  # Print out the updated label to debug
 
-                # Display the label of the face
-                cv2.putText(frame, label_text, (startX, startY - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.85,
-                            dist_label[labels_dist[i]], 2)
+                    # Display the label of the face
+                    cv2.putText(frame, label_text, (startX, startY - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.85,
+                                dist_label[labels_dist[i]], 2)
+                    
+                    if labels_mask[i] in [1, 2, 3, 4]:
+                        log_message = "Someone is not wearing a mask properly."
+                        log_queue.put(log_message)
+
+                # show the output frame
+                ret, buffer = cv2.imencode('.jpg', frame)
+                frame = buffer.tobytes()
+                yield (b'--frame\r\n'
+                    b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
                 
-                if labels_mask[i] in [1, 2, 3, 4]:
-                    log_message = "Someone is not wearing a mask properly."
+                dist_violation = 1 in labels_dist
+                if dist_violation:  # if there's a violation, add a log message
+                    log_message = "There are people not social distancing."
                     log_queue.put(log_message)
-
-            # show the output frame
-            ret, buffer = cv2.imencode('.jpg', frame)
-            frame = buffer.tobytes()
-            yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
-            
-            dist_violation = 1 in labels_dist
-            if dist_violation:  # if there's a violation, add a log message
-                log_message = "There are people not social distancing."
-                log_queue.put(log_message)
-            #else:
-            #    log_message = "No violation detected"
-            #    log_queue.put(log_message)
+                #else:
+                #    log_message = "No violation detected"
+                #    log_queue.put(log_message)
+            else:
+                ret, buffer = cv2.imencode('.jpg', frame)
+                frame = buffer.tobytes()
+                yield (b'--frame\r\n'
+                       b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
 
 
 @app.route('/video_feed')

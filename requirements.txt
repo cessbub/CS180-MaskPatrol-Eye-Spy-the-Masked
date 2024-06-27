@@ -2,4 +2,5 @@ Flask
 opencv-python 
 scipy
 tensorflow
+tflite
 numpy
